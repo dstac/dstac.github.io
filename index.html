@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content=" Official Write-up for theUpdater room on TryHackMe">
-    <title>TryHackMe Room Write-up</title>
+    <meta name="description" content="Official Write-up for theUpdater room on TryHackMe">
+    <title>theUpdater Room Write-up</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -52,40 +52,115 @@
             color: #2c3e50;
             font-weight: bold;
         }
+        img {
+            display: block;
+            margin: 10px 0;
+            max-width: 100%;
+            height: auto;
+            border: 1px solid #ccc;
+        }
     </style>
 </head>
 <body>
 
 <header>
-    <h1>TryHackMe Room Write-up: [Room Name]</h1>
+    <h1>TryHackMe Room Write-up: theUpdater</h1>
 </header>
 
 <div class="container">
     <section id="overview">
         <h2>Overview</h2>
-        <p>In this write-up, we will cover the [Room Name] on TryHackMe. This room focuses on [brief description of the room objectives].</p>
+        <p>In this write-up, we will cover theUpdater on TryHackMe. This room focuses on enumerating the website and getting user and root flags.</p>
     </section>
 
     <section id="steps">
         <h2>Steps</h2>
-        <h3>Step 1: [Step Title]</h3>
-        <p>Describe the first step here. You can include commands or code snippets using the <code>pre</code> and <code>code</code> tags.</p>
-        <pre><code class="command">example@command:~$ ls -la</code></pre>
 
-        <h3>Step 2: [Step Title]</h3>
-        <p>Describe the second step here.</p>
+        <h3>Step 1: NMAP</h3>
+        <p>So firsty, we start the enumeration by running an nmap scan and will find these open ports:</p>
+        <pre><code class="command">example@command:~$ sudo nmap -sC -sV [victim-ip]</code></pre>
+        <img src="img/nmap.png" alt="nmap scan">
 
-        <!-- Add more steps as necessary -->
+        <h3>Step 2: Website enumeration</h3>
+        <p>Now we can check the website that is running on 80 and 443 ports. It seems like a basic website and after inspection we can find email address that might be of use.</p>
+        <img src="img/email.png" alt="found email">
+
+        <h3>Step 3: Directory scanning</h3>
+        <p>Let's proceed to directory scanning. I will use gobuster for this task. Don't forget to use '-k' flag to ignore ssl cert checking.</p>
+        <pre><code class="command">example@command:~$ gobuster dir -k -u https://theupdater.co -w /usr/share/seclists/Discovery/Web-Content/directory-list-lowercase-2.3-medium.txt -x txt,php,html </code></pre>
+        <img src="img/gobuster1.png" alt="gobuster">
+        <p>It seems that /auth directory leads us to some login form. I decided to inspect it further and ran another scan from that directory:</p>
+        <img src="img/gobuster2.png" alt="gobuster-more">
+        <p>We have found a location where we can register on this site. Let's try that. After logging in we can inspect the site, but it does not contain any valuable information. But let's check the source code and it looks like a developer left a comment for himself!</p>
+        <img src="img/comment.png" alt="comment">
+
+        <h3>Step 4: SQLMAP</h3>
+        <p>Moving on! Let's fire up an sqlmap for this task. We can capture an http request on login page and pass it to sqlmap.</p>
+        <pre><code class="command">example@command:~$ sqlmap -u 'https://theupdater.co/auth/index.php' --data='email=test@test.com&pass=test&submit=' --dump --level=3 --risk=3
+        </code></pre>
+        <img src="img/sql1.png" alt="sql1">
+        <p>The scan takes some time and multiple prompts to agree to. Lastly, the scan found that 'email' parameter is vulnerable and asks if we want to test others, so it's up to you if you want to do that.
+        Also, we are given an advise to use: <pre>--tamper=between</pre>and we are going to re-run our scan using this option.</p>
+        <p>This scan might take a while, but it was worth waiting! We are presented with several tables from the database that contains credentials and other information!</p>
+        <img src="img/sql2.png" alt="sql2">
+        <img src="img/sql3.png" alt="sql3">
+        <p>Firstly, we are provided with some base64 encoded strings, let's see if they are of any use to us. We can use online tools like CyberChef or decode it directly in command line:</p>
+        <pre><code class="command">example@command:~$ echo YmFja3VwX3Bhc3N3b3Jkcw== | base64 -d<br>backup_passwords</code></pre>
+        <p>Interesting! First line hints that there might be some kind of passwords backed-up, but where?</p>
+        <pre><code class="command">example@command:~$ echo ViBhcnJxIGdiIHhycmMgZ3V2ZiBqYmVxeXZmZyBicyB6bCBjbmZmamJlcWYgdmFwbmZyIFYncSBzYmV0cmcgdmcgOig= | base64 -d
+        <br>V arrq gb xrrc guvf jbeqyvfg bs zl cnffjbeqf vapnfr V'q sbetrg vg :(</code></pre>
+        <p>Second string looks like gibberish, but there must be more to it, let's try to decode it using ROT13 cipher:</p>
+        <pre><code class="command">example@command:~$ echo ViBhcnJxIGdiIHhycmMgZ3V2ZiBqYmVxeXZmZyBicyB6bCBjbmZmamJlcWYgdmFwbmZyIFYncSBzYmV0cmcgdmcgOig= | base64 -d | tr 'a-zA-Z' 'n-za-mN-ZA-M'
+        <br>I need to keep this wordlist of my passwords incase I'd forget it :(</code></pre>
+        <p>So, there is definitely a list of passwords hidden somewhere, but let's leave this for later. We have also found a credentials table with usernames and hashes. It is interesting that both hashes are identical.</p>
+
+        <h3>Step 5: Cracking the hashes</h3>
+        <p>First of all, we need to know what kind of hash we have in order to crack it. Let's save the hash to a file and check it:</p>
+        <img src="img/hashid.png" alt="hashid">
+        <p>According to hashid, it might be bcrypt hash, let's use hashcat and check for the id of this algorithm:</p>
+        <img src="img/bcrypt.png" alt="bcrypt">
+        <p>Let's proceed to cracking with hashcat:</p>
+        <pre><code class="command">example@command:~$ hashcat -a 0 -m 3200 hash /usr/share/wordlists/rockyou.txt</code></pre>
+        <p>Success!</p>
+
+        <h3>Step 6: Getting deeper</h3>
+        <p>Now we have few options. We can try to login to the application using cracked password or try access ftp server (ftpuser indicates it might be the one for the ftp server).</p>
+        <img src="img/ftp.png" alt="ftp">
+        <p>We have successfully accessed ftp server and found a history file in it. It suggests that we need to run sqlmap once again with different flag. Also it appears that there is the user we can access through ssh.
+        Unfortunately, it is not accessible with the password we've just cracked. Let's proceed to the web application for now.</p>
+
+        <h3>Step 7: Logging-in</h3>
+        <p>We can successfully log in with both users we have found using the same password, but the user we are interested in is 'theupdater@theupdater.co'. After inspecting the website now we stumbble across 'Keys' section. There is some kind of keys added to this account. Let's hover the mouse over 'Authorized' string. It's a link and it appears that the previously obtained base64 encoded strings are in it. What would that mean? We found the hidden passwords!</p>
+        <img src="img/keys.png" alt="ftp">
+
+        <h3>Step 8: Sqlmap. Again.</h3>
+        <p>So, if we follow the directions from previously downloaded history file, we can run sqlmap with the following command:</p>
+        <pre><code class="command">example@command:~$ sqlmap -u 'https://10.10.73.39/auth/index.php' --data='email=test@test.com&pass=test&submit=' --passwords --level=3 --risk=3 --tamper=between
+        </code></pre>
+        <img src="img/hashes.png" alt="hashes">
+        <p>This scan has retrieved several users and password hashes. When the script prompts us if we want to perform a dictionary attack we can confirm and choose the wordlist we have previously downloaded from the website.</p>
+        <p>Success! We have cracked the hash for the user: theupdater. Let's try to connect via SSH. It works and we can instantly get the user flag!</p>
+        <img src="img/user.png" alt="user">
+
+        <h3>Step 9: Privilege escalation</h3>
+        <p>Now we can check directories in user's home directory and when I accessed utils directory I found very interesting file 'dbconn.php'. It appears that there are some credentials to the database. And the username is the same as the one in the system, called 'bionic'.</p>
+        <p>Switching to this user with a given password yields the result we've been wishing from the beggining!</p>
+        <img src="img/bionic.png" alt="bionic">
+        <p>Let's switch to the root user and access it's home directory. Finally, we get the root flag!</p>
+        <img src="img/complete.png" alt="complete">
+
     </section>
 
     <section id="conclusion">
         <h2>Conclusion</h2>
-        <p>Summarize the key takeaways from the room and what you learned.</p>
+        <p>The "theUpdater" room on TryHackMe provided a comprehensive challenge that covered various aspects of penetration testing, including web enumeration, SQL injection, password cracking, and privilege escalation. Throughout this exercise, we practiced critical skills such as using Nmap for network scanning, Gobuster for directory enumeration, SQLMap for database exploitation, and Hashcat for cracking password hashes. We also explored decoding techniques using Base64 and ROT13, which are essential in many CTF challenges.</p>
+        <p>This room emphasized the importance of thorough enumeration, as each step built upon the findings from the previous ones. Additionally, it highlighted the necessity of understanding different attack vectors and how they can be leveraged to gain unauthorized access to a system. Ultimately, we successfully escalated our privileges to root, gaining full control over the target machine and completing the room objectives.</p>
+        <p>Overall, "theUpdater" is an excellent room for honing web penetration testing skills, especially for those interested in real-world scenarios that involve complex multi-step exploits. The challenge reinforces the significance of patience, attention to detail, and the ability to adapt techniques based on the information uncovered during the engagement.</p>
     </section>
 </div>
 
 <footer>
-    <p>&copy; 2025 Your Name. All Rights Reserved.</p>
+    <p>&copy; 2025 dansta1. All Rights Reserved.</p>
 </footer>
 
 </body>
